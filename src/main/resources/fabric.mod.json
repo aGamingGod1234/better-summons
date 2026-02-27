@@ -1,0 +1,26 @@
+{
+	"schemaVersion": 1,
+	"id": "better_summon",
+	"version": "${version}",
+	"name": "Better /summon",
+	"description": "Extends /summon with repeat counts and secure-random repeat ranges.",
+	"authors": [
+		"aGamingGod"
+	],
+	"contact": {
+		"sources": "https://github.com/aGamingGod/better-summon"
+	},
+	"license": "CC0-1.0",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.agaminggod.bettersummon.BetterSummonMod"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.18.4",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}
