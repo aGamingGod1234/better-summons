@@ -10,6 +10,7 @@ import com.mojang.brigadier.exceptions.Dynamic2CommandExceptionType;
 import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.util.Objects;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.command.CommandRegistryAccess;
@@ -17,6 +18,7 @@ import net.minecraft.command.argument.NbtCompoundArgumentType;
 import net.minecraft.command.argument.RegistryEntryReferenceArgumentType;
 import net.minecraft.command.argument.Vec3ArgumentType;
 import net.minecraft.command.permission.PermissionCheck;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.registry.RegistryKeys;
@@ -135,12 +137,17 @@ public final class BetterSummonMod implements ModInitializer {
 		int successfulExecutions = 0;
 		for (int i = 0; i < repeatCount; i++) {
 			try {
-				SummonCommand.summon(source, request.entityType(), request.position(), request.nbt(), request.initialize());
+				Entity entity = SummonCommand.summon(source, request.entityType(), request.position(), request.nbt(), request.initialize());
+				if (entity == null) {
+					LOGGER.warn("SummonCommand.summon() returned null at iteration {}", i + 1);
+					break;
+				}
 				successfulExecutions++;
 			} catch (CommandSyntaxException exception) {
 				if (successfulExecutions == 0) {
 					throw exception;
 				}
+				LOGGER.warn("Summon failed at iteration {}/{}: {}", i + 1, repeatCount, exception.getMessage());
 				break;
 			}
 		}
@@ -199,7 +206,9 @@ public final class BetterSummonMod implements ModInitializer {
 		throws CommandSyntaxException {
 		int endIndex = -1;
 		for (ParsedCommandNode<ServerCommandSource> parsedNode : context.getNodes()) {
-			if (baseNodeName.equals(parsedNode.getNode().getName())) {
+			if (parsedNode.getNode() != null
+				&& baseNodeName.equals(parsedNode.getNode().getName())
+				&& parsedNode.getRange() != null) {
 				endIndex = parsedNode.getRange().getEnd();
 			}
 		}
@@ -220,6 +229,9 @@ public final class BetterSummonMod implements ModInitializer {
 		if (min == max) {
 			return min;
 		}
+		if (max == Integer.MAX_VALUE) {
+			throw new IllegalArgumentException("max cannot be Integer.MAX_VALUE for inclusive range (would overflow)");
+		}
 		return SECURE_RANDOM.nextInt(min, max + 1);
 	}
 
@@ -238,5 +250,10 @@ public final class BetterSummonMod implements ModInitializer {
 		NbtCompound nbt,
 		boolean initialize
 	) {
+		SummonRequest {
+			Objects.requireNonNull(entityType, "entityType must not be null");
+			Objects.requireNonNull(position, "position must not be null");
+			Objects.requireNonNull(nbt, "nbt must not be null");
+		}
 	}
 }
