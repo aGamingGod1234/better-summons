@@ -8,11 +8,15 @@ import com.mojang.brigadier.context.ParsedCommandNode;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.exceptions.Dynamic2CommandExceptionType;
 import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
-import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ThreadLocalRandom;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.command.CommandRegistryAccess;
 import net.minecraft.command.argument.NbtCompoundArgumentType;
 import net.minecraft.command.argument.RegistryEntryReferenceArgumentType;
@@ -37,6 +41,7 @@ public final class BetterSummonMod implements ModInitializer {
 	private static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
 	private static final int MAX_REPEAT_COUNT = 10_000;
+	private static final int ENTITIES_PER_TICK = 100;
 	private static final String COMMAND_NAME = "summon";
 	private static final String ARG_ENTITY = "entity";
 	private static final String ARG_POS = "pos";
@@ -53,7 +58,7 @@ public final class BetterSummonMod implements ModInitializer {
 		new Dynamic2CommandExceptionType((min, max) ->
 			Text.literal("Invalid range: min (" + min + ") must be less than or equal to max (" + max + ")."));
 
-	private static final SecureRandom SECURE_RANDOM = createSecureRandom();
+	private static final List<SpawnTask> ACTIVE_TASKS = new ArrayList<>();
 
 	@Override
 	public void onInitialize() {
@@ -64,6 +69,14 @@ public final class BetterSummonMod implements ModInitializer {
 					.then(createEntityBranch(registryAccess))
 			)
 		);
+
+		ServerTickEvents.END_SERVER_TICK.register(server -> processSpawnTasks());
+		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
+			if (!ACTIVE_TASKS.isEmpty()) {
+				LOGGER.info("Server stopping, cancelling {} pending spawn task(s)", ACTIVE_TASKS.size());
+				ACTIVE_TASKS.clear();
+			}
+		});
 
 		LOGGER.info("Better /summon extensions loaded.");
 	}
@@ -119,7 +132,7 @@ public final class BetterSummonMod implements ModInitializer {
 			throw INVALID_RANDOM_RANGE_ERROR.create(min, max);
 		}
 
-		int selectedCount = secureRandomInRangeInclusive(min, max);
+		int selectedCount = randomInRangeInclusive(min, max);
 		String randomDetails = " (randomly selected in [" + min + ", " + max + "])";
 		return executeRepeats(context, baseNodeName, selectedCount, randomDetails);
 	}
@@ -134,10 +147,33 @@ public final class BetterSummonMod implements ModInitializer {
 		SummonRequest request = buildSummonRequest(context, baseNodeName);
 		String baseCommand = extractBaseCommand(context, baseNodeName);
 
+		if (repeatCount <= ENTITIES_PER_TICK) {
+			return spawnImmediate(source, request, baseCommand, repeatCount, details);
+		}
+
+		ACTIVE_TASKS.add(new SpawnTask(source, request, baseCommand, repeatCount, details));
+		int count = repeatCount;
+		int batch = ENTITIES_PER_TICK;
+		String suffix = details == null ? "" : details;
+		source.sendFeedback(
+			() -> Text.literal("Spawning " + count + " entities in batches of " + batch + suffix + "..."),
+			false
+		);
+		return repeatCount;
+	}
+
+	private static int spawnImmediate(
+		ServerCommandSource source,
+		SummonRequest request,
+		String baseCommand,
+		int repeatCount,
+		String details
+	) throws CommandSyntaxException {
 		int successfulExecutions = 0;
 		for (int i = 0; i < repeatCount; i++) {
 			try {
-				Entity entity = SummonCommand.summon(source, request.entityType(), request.position(), request.nbt(), request.initialize());
+				NbtCompound nbtCopy = request.nbt().copy();
+				Entity entity = SummonCommand.summon(source, request.entityType(), request.position(), nbtCopy, request.initialize());
 				if (entity == null) {
 					LOGGER.warn("SummonCommand.summon() returned null at iteration {}", i + 1);
 					break;
@@ -149,6 +185,9 @@ public final class BetterSummonMod implements ModInitializer {
 				}
 				LOGGER.warn("Summon failed at iteration {}/{}: {}", i + 1, repeatCount, exception.getMessage());
 				break;
+			} catch (Exception exception) {
+				LOGGER.error("Unexpected error at iteration {}/{}", i + 1, repeatCount, exception);
+				break;
 			}
 		}
 
@@ -156,27 +195,52 @@ public final class BetterSummonMod implements ModInitializer {
 			return 0;
 		}
 
-		String suffix = details == null ? "" : details;
-		if (successfulExecutions < repeatCount) {
-			int requestedCount = repeatCount;
-			int executedCount = successfulExecutions;
-			source.sendFeedback(
-				() -> Text.literal(
-					"Executed /" + baseCommand + " " + executedCount + "/" + requestedCount
-						+ " time(s) before a failure stopped execution" + suffix + "."
-				),
-				false
-			);
-			return executedCount;
+		sendCompletionFeedback(source, baseCommand, successfulExecutions, repeatCount, details);
+		return successfulExecutions;
+	}
+
+	private static void processSpawnTasks() {
+		if (ACTIVE_TASKS.isEmpty()) {
+			return;
 		}
 
-		int executedCount = successfulExecutions;
-		source.sendFeedback(
-			() -> Text.literal("Executed /" + baseCommand + " " + executedCount + " time(s)" + suffix + "."),
-			false
-		);
+		Iterator<SpawnTask> iterator = ACTIVE_TASKS.iterator();
+		while (iterator.hasNext()) {
+			SpawnTask task = iterator.next();
+			boolean completed = task.processNextBatch();
+			if (completed) {
+				sendCompletionFeedback(task.source, task.baseCommand, task.spawned, task.totalCount, task.details);
+				iterator.remove();
+			}
+		}
+	}
 
-		return successfulExecutions;
+	private static void sendCompletionFeedback(
+		ServerCommandSource source,
+		String baseCommand,
+		int successCount,
+		int totalCount,
+		String details
+	) {
+		String suffix = details == null ? "" : details;
+		try {
+			if (successCount < totalCount) {
+				source.sendFeedback(
+					() -> Text.literal(
+						"Executed /" + baseCommand + " " + successCount + "/" + totalCount
+							+ " time(s) before a failure stopped execution" + suffix + "."
+					),
+					false
+				);
+			} else {
+				source.sendFeedback(
+					() -> Text.literal("Executed /" + baseCommand + " " + successCount + " time(s)" + suffix + "."),
+					false
+				);
+			}
+		} catch (Exception exception) {
+			LOGGER.warn("Failed to send completion feedback", exception);
+		}
 	}
 
 	private static SummonRequest buildSummonRequest(CommandContext<ServerCommandSource> context, String baseNodeName)
@@ -225,22 +289,50 @@ public final class BetterSummonMod implements ModInitializer {
 		return CommandManager.stripLeadingSlash(rawBaseCommand);
 	}
 
-	private static int secureRandomInRangeInclusive(int min, int max) {
+	private static int randomInRangeInclusive(int min, int max) {
 		if (min == max) {
 			return min;
 		}
 		if (max == Integer.MAX_VALUE) {
 			throw new IllegalArgumentException("max cannot be Integer.MAX_VALUE for inclusive range (would overflow)");
 		}
-		return SECURE_RANDOM.nextInt(min, max + 1);
+		return ThreadLocalRandom.current().nextInt(min, max + 1);
 	}
 
-	private static SecureRandom createSecureRandom() {
-		try {
-			return SecureRandom.getInstanceStrong();
-		} catch (NoSuchAlgorithmException exception) {
-			LOGGER.warn("Strong SecureRandom unavailable, falling back to default SecureRandom", exception);
-			return new SecureRandom();
+	private static final class SpawnTask {
+		final ServerCommandSource source;
+		final SummonRequest request;
+		final String baseCommand;
+		final int totalCount;
+		final String details;
+		int spawned;
+
+		SpawnTask(ServerCommandSource source, SummonRequest request, String baseCommand, int totalCount, String details) {
+			this.source = source;
+			this.request = request;
+			this.baseCommand = baseCommand;
+			this.totalCount = totalCount;
+			this.details = details;
+			this.spawned = 0;
+		}
+
+		boolean processNextBatch() {
+			int batchEnd = Math.min(spawned + ENTITIES_PER_TICK, totalCount);
+			for (int i = spawned; i < batchEnd; i++) {
+				try {
+					NbtCompound nbtCopy = request.nbt().copy();
+					Entity entity = SummonCommand.summon(source, request.entityType(), request.position(), nbtCopy, request.initialize());
+					if (entity == null) {
+						LOGGER.warn("SummonCommand.summon() returned null at iteration {}/{}", i + 1, totalCount);
+						return true;
+					}
+					spawned++;
+				} catch (Exception exception) {
+					LOGGER.warn("Batched summon failed at iteration {}/{}: {}", i + 1, totalCount, exception.getMessage());
+					return true;
+				}
+			}
+			return spawned >= totalCount;
 		}
 	}
 
