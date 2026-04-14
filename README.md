@@ -14,13 +14,17 @@ Better /summon extends vanilla `/summon` with repeat-count variants for faster e
 ## Behavior
 
 - The mod keeps vanilla summon validation by calling Minecraft's internal `SummonCommand.summon(...)`.
-- `random` uses `SecureRandom` (cryptographically secure random source).
-- If a repeated summon fails partway through, execution stops and reports partial completion.
+- `random` uses `ThreadLocalRandom` (fast, non-cryptographic — appropriate for game logic).
+- Spawns above 100 entities are batched across server ticks (100/tick) to protect TPS.
+- Long-running batched spawns emit periodic progress updates.
+- Tasks can be inspected with `/summonstatus` and aborted with `/summoncancel`.
+- If a repeated summon fails partway through, execution stops and reports partial completion with the failure reason.
 
 ## Guardrails
 
 - Allowed repeat range: `1..10000`.
 - Invalid random ranges (`min > max`) return a command error.
+- Batched spawns are aborted automatically if the command source becomes invalid (e.g., player disconnect, world unload).
 - Requires operator-level permissions consistent with vanilla summon usage.
 
 ## Build
