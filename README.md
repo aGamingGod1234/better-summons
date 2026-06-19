@@ -1,45 +1,78 @@
-# Better /summon (Fabric 1.21.11)
+# Better /summon
 
-Better /summon extends vanilla `/summon` with repeat-count variants for faster entity spawning workflows.
+`Better /summon` is a small Fabric mod for Minecraft `1.21.11` that lets you spawn the same entity multiple times with a single command.
 
-## Features
+It keeps the normal `/summon` command intact and adds extra forms for:
 
-- `/summon <entity> <count>`
-- `/summon <entity> random <min> <max>`
-- `/summon <entity> <pos> <count>`
-- `/summon <entity> <pos> random <min> <max>`
-- `/summon <entity> <pos> <nbt> <count>`
-- `/summon <entity> <pos> <nbt> random <min> <max>`
+- fixed repeat counts
+- random repeat counts
+- custom positions
+- custom NBT data
 
-## Behavior
+This is useful for testing farms, building encounters, setting up maps, or quickly spawning mobs during admin work.
 
-- The mod keeps vanilla summon validation by calling Minecraft's internal `SummonCommand.summon(...)`.
-- `random` uses `SecureRandom` (cryptographically secure random source).
-- If a repeated summon fails partway through, execution stops and reports partial completion.
+## What You Need
 
-## Guardrails
+- Minecraft `1.21.11`
+- [Fabric Loader](https://fabricmc.net/use/)
+- [Fabric API](https://modrinth.com/mod/fabric-api)
+- Java `21` or newer
 
-- Allowed repeat range: `1..10000`.
-- Invalid random ranges (`min > max`) return a command error.
-- Requires operator-level permissions consistent with vanilla summon usage.
+> This mod is meant for worlds or servers where you already have permission to use `/summon`.
 
-## Build
+## Installation
 
-```powershell
-./gradlew build
+1. Get the mod jar file named `better-summon-<version>.jar`.
+2. Put it in your Minecraft `mods` folder.
+3. Make sure `Fabric API` is also installed in the same `mods` folder.
+4. Start Minecraft with the Fabric profile.
+
+Common Windows mods folder:
+
+```text
+C:\Users\<YourUser>\AppData\Roaming\.minecraft\mods
 ```
 
-Output jar:
+## What It Adds
 
-- `build/libs/better-summon-<version>.jar`
+Vanilla `/summon` still works the same.
 
-## Install
+This mod adds the following extra command forms:
 
-1. Build the mod.
-2. Copy the jar to your mods folder, usually:
-   `C:\Users\<YourUser>\AppData\Roaming\.minecraft\mods`
-3. Start Fabric `1.21.11`.
+```text
+/summon <entity> <count>
+/summon <entity> random <min> <max>
+/summon <entity> <pos> <count>
+/summon <entity> <pos> random <min> <max>
+/summon <entity> <pos> <nbt> <count>
+/summon <entity> <pos> <nbt> random <min> <max>
+```
+
+## Examples
+
+| What you want to do | Command |
+| --- | --- |
+| Spawn 10 zombies | `/summon minecraft:zombie 10` |
+| Spawn a random number of zombies from 5 to 20 | `/summon minecraft:zombie random 5 20` |
+| Spawn 8 creepers at a specific location | `/summon minecraft:creeper 100 64 100 8` |
+| Spawn 12 skeletons at your current position | `/summon minecraft:skeleton ~ ~ ~ 12` |
+| Spawn 5 slimes with NBT data | `/summon minecraft:slime ~ ~ ~ {Size:4} 5` |
+| Spawn a random number of no-AI villagers from 2 to 6 | `/summon minecraft:villager ~ ~ ~ {NoAI:1b} random 2 6` |
+
+## How It Behaves
+
+- You must have permission to use `/summon`, just like vanilla.
+- Repeat counts can be between `1` and `10,000`.
+- Random ranges must be valid, so `min` cannot be greater than `max`.
+- If one summon fails during a batch, the mod stops and tells you how many were completed.
+- Position and NBT support work alongside the repeat-count features.
+
+## Good To Know
+
+- Works well for admins, map makers, and testing setups.
+- Useful in single-player with cheats enabled or on Fabric servers with operator permissions.
+- It does not change normal mob behavior by itself. It only makes repeated summoning faster.
 
 ## License
 
-CC0-1.0
+`CC0-1.0`
