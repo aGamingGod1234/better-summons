@@ -42,6 +42,7 @@ public final class BetterSummonMod implements ModInitializer {
 
 	private static final int MAX_REPEAT_COUNT = 10_000;
 	private static final int ENTITIES_PER_TICK = 100;
+	private static final int MAX_ACTIVE_TASKS = 20;
 	private static final String COMMAND_NAME = "summon";
 	private static final String ARG_ENTITY = "entity";
 	private static final String ARG_POS = "pos";
@@ -58,6 +59,18 @@ public final class BetterSummonMod implements ModInitializer {
 		new Dynamic2CommandExceptionType((min, max) ->
 			Text.literal("Invalid range: min (" + min + ") must be less than or equal to max (" + max + ")."));
 
+	private static final SimpleCommandExceptionType TASK_QUEUE_FULL_ERROR =
+		new SimpleCommandExceptionType(Text.literal(
+			"Too many pending batched /summon tasks; please wait for current tasks to finish."));
+
+	private static final NbtCompound EMPTY_NBT = new NbtCompound();
+
+	/**
+	 * ACTIVE_TASKS is mutated only from the server thread: the command executor runs on
+	 * the server thread, and {@link #processSpawnTasks} runs during END_SERVER_TICK.
+	 * {@link ServerLifecycleEvents#SERVER_STOPPING} also fires on the server thread in
+	 * Fabric. No external synchronization is needed; we keep it as a plain ArrayList.
+	 */
 	private static final List<SpawnTask> ACTIVE_TASKS = new ArrayList<>();
 
 	@Override
@@ -71,6 +84,14 @@ public final class BetterSummonMod implements ModInitializer {
 		);
 
 		ServerTickEvents.END_SERVER_TICK.register(server -> processSpawnTasks());
+		ServerLifecycleEvents.SERVER_STARTING.register(server -> {
+			// Clear any stragglers from a prior integrated-server session to avoid
+			// stale ServerCommandSource references pointing at a defunct world.
+			if (!ACTIVE_TASKS.isEmpty()) {
+				LOGGER.info("Server starting; discarding {} stale spawn task(s) from prior session", ACTIVE_TASKS.size());
+				ACTIVE_TASKS.clear();
+			}
+		});
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
 			if (!ACTIVE_TASKS.isEmpty()) {
 				LOGGER.info("Server stopping, cancelling {} pending spawn task(s)", ACTIVE_TASKS.size());
@@ -151,6 +172,10 @@ public final class BetterSummonMod implements ModInitializer {
 			return spawnImmediate(source, request, baseCommand, repeatCount, details);
 		}
 
+		if (ACTIVE_TASKS.size() >= MAX_ACTIVE_TASKS) {
+			throw TASK_QUEUE_FULL_ERROR.create();
+		}
+
 		ACTIVE_TASKS.add(new SpawnTask(source, request, baseCommand, repeatCount, details));
 		int count = repeatCount;
 		int batch = ENTITIES_PER_TICK;
@@ -172,8 +197,8 @@ public final class BetterSummonMod implements ModInitializer {
 		int successfulExecutions = 0;
 		for (int i = 0; i < repeatCount; i++) {
 			try {
-				NbtCompound nbtCopy = request.nbt().copy();
-				Entity entity = SummonCommand.summon(source, request.entityType(), request.position(), nbtCopy, request.initialize());
+				NbtCompound nbtForCall = nbtForSummon(request);
+				Entity entity = SummonCommand.summon(source, request.entityType(), request.position(), nbtForCall, request.initialize());
 				if (entity == null) {
 					LOGGER.warn("SummonCommand.summon() returned null at iteration {}", i + 1);
 					break;
@@ -289,6 +314,21 @@ public final class BetterSummonMod implements ModInitializer {
 		return CommandManager.stripLeadingSlash(rawBaseCommand);
 	}
 
+	/**
+	 * Returns an NbtCompound to pass to SummonCommand.summon. If the request NBT is
+	 * empty we can safely share a single immutable empty compound instead of deep-copying
+	 * on every iteration, since SummonCommand only writes to it when non-empty input
+	 * is present anyway. This avoids 100 redundant empty-map clones per tick on the
+	 * common case where no [nbt] argument was supplied.
+	 */
+	private static NbtCompound nbtForSummon(SummonRequest request) {
+		NbtCompound source = request.nbt();
+		if (source.isEmpty()) {
+			return EMPTY_NBT;
+		}
+		return source.copy();
+	}
+
 	private static int randomInRangeInclusive(int min, int max) {
 		if (min == max) {
 			return min;
@@ -317,11 +357,17 @@ public final class BetterSummonMod implements ModInitializer {
 		}
 
 		boolean processNextBatch() {
+			// Bail out if the originating server is no longer running to avoid
+			// calling into a stopped/defunct world with a stale ServerCommandSource.
+			if (source.getServer() == null || !source.getServer().isRunning()) {
+				LOGGER.warn("Cancelling batched summon at {}/{}: source server is no longer running", spawned, totalCount);
+				return true;
+			}
 			int batchEnd = Math.min(spawned + ENTITIES_PER_TICK, totalCount);
 			for (int i = spawned; i < batchEnd; i++) {
 				try {
-					NbtCompound nbtCopy = request.nbt().copy();
-					Entity entity = SummonCommand.summon(source, request.entityType(), request.position(), nbtCopy, request.initialize());
+					NbtCompound nbtForCall = nbtForSummon(request);
+					Entity entity = SummonCommand.summon(source, request.entityType(), request.position(), nbtForCall, request.initialize());
 					if (entity == null) {
 						LOGGER.warn("SummonCommand.summon() returned null at iteration {}/{}", i + 1, totalCount);
 						return true;
