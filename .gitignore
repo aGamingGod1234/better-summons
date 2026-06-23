@@ -31,6 +31,7 @@ bin/
 # fabric
 
 run/
+logs/
 
 # java
 
@@ -38,3 +39,6 @@ hs_err_*.log
 replay_*.log
 *.hprof
 *.jfr
+
+# local workflow notes
+PROJECT_LOG.md

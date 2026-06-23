@@ -1,12 +1,43 @@
 # Better /summon
 
-A small, focused Fabric server-side mod for Minecraft **1.21.11** (Java 21) that extends the vanilla `/summon` command with **repeat-count** and **random-count** variants so server operators and map-makers can spawn large groups of entities with a single command, without resorting to chained command blocks or external scripts.
+`Better /summon` is a small Fabric server-side mod for Minecraft `26.x` that lets operators and map makers spawn the same entity multiple times with a single command.
 
-The mod is deliberately minimal: it delegates all entity-spawning logic to Minecraft's own `SummonCommand.summon(...)`, so vanilla compatibility, NBT validation, and mob-cap behaviour stay identical. It only adds a convenient wrapper around how many times that vanilla call is made.
+It keeps the normal `/summon` command intact and adds extra forms for:
 
-## What it adds
+- fixed repeat counts
+- random repeat counts
+- custom positions
+- custom NBT data
 
-Six new syntax overloads on top of vanilla `/summon`:
+This is useful for testing farms, building encounters, setting up maps, or quickly spawning mobs during admin work. The mod delegates each spawn to Minecraft's own `SummonCommand.createEntity(...)`, so vanilla validation, NBT handling, permissions, and side effects stay intact.
+
+## What You Need
+
+- Minecraft `26.x`
+- [Fabric Loader](https://fabricmc.net/use/)
+- [Fabric API](https://modrinth.com/mod/fabric-api)
+- Java `25` or newer
+
+> This mod is meant for worlds or servers where you already have permission to use `/summon`.
+
+## Installation
+
+1. Get the mod jar file named `better-summon-<version>.jar`.
+2. Put it in your Minecraft `mods` folder.
+3. Make sure `Fabric API` is also installed in the same `mods` folder.
+4. Start Minecraft with the Fabric profile.
+
+Common Windows mods folder:
+
+```text
+C:\Users\<YourUser>\AppData\Roaming\.minecraft\mods
+```
+
+The mod runs server-side only; connecting clients do not need it installed.
+
+## What It Adds
+
+Vanilla `/summon` still works the same. This mod adds the following extra command forms:
 
 | Syntax | What it does |
 | --- | --- |
@@ -17,27 +48,35 @@ Six new syntax overloads on top of vanilla `/summon`:
 | `/summon <entity> <pos> <nbt> <count>` | Summon `<entity>` `<count>` times at `<pos>` using `<nbt>` as the base tag. |
 | `/summon <entity> <pos> <nbt> random <min> <max>` | Summon `<entity>` a random number of times in `[min, max]` at `<pos>` using `<nbt>`. |
 
-All other `/summon` forms fall through to vanilla behaviour unchanged.
+The permission level is the same for every variant: op level 2 (`GAMEMASTERS`). The two-argument and three-argument vanilla forms (`/summon <entity>`, `/summon <entity> <pos>`, `/summon <entity> <pos> <nbt>`) continue to work exactly as before.
 
-## How it works
+## Examples
 
-- **Delegation, not re-implementation.** Every spawn goes through vanilla `SummonCommand.summon(source, entityType, pos, nbt, initialize)`, so NBT validation, permissions, and side-effects (raids, boss bars, etc.) are identical to vanilla.
-- **Batched spawning to protect TPS.** When the requested count is greater than `ENTITIES_PER_TICK` (100), the summon is split across multiple server ticks. A `SpawnTask` is queued and drained in `END_SERVER_TICK` at 100 entities per tick. The console receives a `Spawning <N> entities in batches of 100...` preview up front and a final `Executed /summon <entityId> <n>/<total>` report when the task completes (or stops partway, if vanilla rejects one of the calls).
-- **Task queue is bounded.** A single command can spawn up to 10,000 entities; the queue is capped at 20 active tasks so a looping command block or rapid RCON burst can't balloon the backlog. Attempting to queue past the cap returns a command error instead of silently consuming memory.
-- **Server-lifecycle aware.** Pending batches are dropped when the server stops, and the queue is reset on server start to discard stale `ServerCommandSource` references from prior integrated-server sessions. Each batch also re-verifies that the originating server is still running before processing the next tick's work.
-- **Minimal allocation on the hot path.** When no `<nbt>` argument is supplied, the mod reuses a shared empty `NbtCompound` rather than deep-cloning an empty map per-entity every tick; this eliminates 100 throwaway allocations per tick when bulk-spawning.
+| What you want to do | Command |
+| --- | --- |
+| Spawn 10 zombies | `/summon minecraft:zombie 10` |
+| Spawn a random number of zombies from 5 to 20 | `/summon minecraft:zombie random 5 20` |
+| Spawn 8 creepers at a specific location | `/summon minecraft:creeper 100 64 100 8` |
+| Spawn 12 skeletons at your current position | `/summon minecraft:skeleton ~ ~ ~ 12` |
+| Spawn 5 slimes with NBT data | `/summon minecraft:slime ~ ~ ~ {Size:4} 5` |
+| Spawn a random number of no-AI villagers from 2 to 6 | `/summon minecraft:villager ~ ~ ~ {NoAI:1b} random 2 6` |
 
-## Guardrails
+## How It Behaves
 
-- **Permission-gated.** The entire command tree is gated behind `GAMEMASTERS_CHECK` (permission level 2), matching vanilla `/summon`.
-- **Integer bounds on every count.** `count`, `min`, and `max` are all Brigadier `IntegerArgumentType.integer(1, 10_000)`, so a malformed argument can't request unbounded work.
-- **Invalid range is a command error.** `random <min> <max>` with `min > max` returns a structured error, not silent fallback.
-- **Queue-full is a command error.** Operators get explicit feedback when they hit the 20-task cap, rather than a silent drop.
-- **Randomness.** Random counts use `ThreadLocalRandom.nextInt(min, max + 1)` (uniform, non-crypto). The upper-bound overflow case (`max == Integer.MAX_VALUE`) is rejected by the argument parser; the internal check is retained as defence-in-depth.
+- You must have permission to use `/summon`, just like vanilla.
+- Repeat counts can be between `1` and `10,000`.
+- Random ranges must be valid, so `min` cannot be greater than `max`.
+- Random counts use `ThreadLocalRandom.nextInt(min, max + 1)`, which is uniform and non-cryptographic.
+- If one summon fails during a batch, the mod stops and tells you how many were completed.
+- Position and NBT support work alongside the repeat-count features.
 
-## Commands reference
+## How It Works
 
-The permission/permission-level is the same for every variant: op level 2 (`GAMEMASTERS`). Everything is a strict superset of vanilla `/summon`; the two-argument and three-argument vanilla forms (`/summon <entity>`, `/summon <entity> <pos>`, `/summon <entity> <pos> <nbt>`) continue to work exactly as before.
+- **Delegation, not re-implementation.** Every spawn goes through vanilla `SummonCommand.createEntity(source, entityType, pos, nbt, initialize)`.
+- **Batched spawning to protect TPS.** Requests above `ENTITIES_PER_TICK` (100) are split across server ticks through `END_SERVER_TICK`. Operators get an up-front batching message and a final completion report.
+- **Task queue is bounded.** A single command can spawn up to 10,000 entities, and the active queue is capped at 20 tasks. Queue-full attempts return a command error instead of growing memory usage.
+- **Server-lifecycle aware.** Pending batches are dropped when the server stops, and the queue is reset on server start to discard stale `CommandSourceStack` references from prior integrated-server sessions.
+- **Minimal allocation on the hot path.** Empty NBT input reuses a shared empty `CompoundTag`; non-empty NBT is copied before each summon.
 
 ## Build
 
@@ -47,20 +86,18 @@ The permission/permission-level is the same for every variant: op level 2 (`GAME
 
 The remapped, production-ready jar is written to:
 
-```
+```text
 build/libs/better-summon-<version>.jar
 ```
 
 There is also a `-sources.jar` next to it if you want the source attached in your IDE.
 
-## Install
+## Good To Know
 
-1. Build the jar (or grab a release jar).
-2. Drop it into your Fabric `mods` folder (typically `%APPDATA%\.minecraft\mods` on Windows).
-3. Launch Fabric for Minecraft `1.21.11`.
-
-The mod runs server-side only; connecting clients do not need it installed.
+- Works well for admins, map makers, and testing setups.
+- Useful in single-player with cheats enabled or on Fabric servers with operator permissions.
+- It does not change normal mob behavior by itself. It only makes repeated summoning faster.
 
 ## License
 
-CC0-1.0.
+`CC0-1.0`
