@@ -17,21 +17,21 @@ import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
-import net.minecraft.command.CommandRegistryAccess;
-import net.minecraft.command.argument.NbtCompoundArgumentType;
-import net.minecraft.command.argument.RegistryEntryReferenceArgumentType;
-import net.minecraft.command.argument.Vec3ArgumentType;
-import net.minecraft.command.permission.PermissionCheck;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.EntityType;
-import net.minecraft.nbt.NbtCompound;
-import net.minecraft.registry.RegistryKeys;
-import net.minecraft.registry.entry.RegistryEntry;
-import net.minecraft.server.command.CommandManager;
-import net.minecraft.server.command.ServerCommandSource;
-import net.minecraft.server.command.SummonCommand;
-import net.minecraft.text.Text;
-import net.minecraft.util.math.Vec3d;
+import net.minecraft.commands.CommandBuildContext;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.CompoundTagArgument;
+import net.minecraft.commands.arguments.ResourceArgument;
+import net.minecraft.commands.arguments.coordinates.Vec3Argument;
+import net.minecraft.core.Holder;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.commands.SummonCommand;
+import net.minecraft.server.permissions.PermissionCheck;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -53,17 +53,17 @@ public final class BetterSummonMod implements ModInitializer {
 	private static final String LITERAL_RANDOM = "random";
 
 	private static final SimpleCommandExceptionType BASE_COMMAND_RESOLUTION_ERROR =
-		new SimpleCommandExceptionType(Text.literal("Failed to resolve summon base command."));
+		new SimpleCommandExceptionType(Component.literal("Failed to resolve summon base command."));
 
 	private static final Dynamic2CommandExceptionType INVALID_RANDOM_RANGE_ERROR =
 		new Dynamic2CommandExceptionType((min, max) ->
-			Text.literal("Invalid range: min (" + min + ") must be less than or equal to max (" + max + ")."));
+			Component.literal("Invalid range: min (" + min + ") must be less than or equal to max (" + max + ")."));
 
 	private static final SimpleCommandExceptionType TASK_QUEUE_FULL_ERROR =
-		new SimpleCommandExceptionType(Text.literal(
+		new SimpleCommandExceptionType(Component.literal(
 			"Too many pending batched /summon tasks; please wait for current tasks to finish."));
 
-	private static final NbtCompound EMPTY_NBT = new NbtCompound();
+	private static final CompoundTag EMPTY_NBT = new CompoundTag();
 
 	/**
 	 * ACTIVE_TASKS is mutated only from the server thread: the command executor runs on
@@ -77,8 +77,8 @@ public final class BetterSummonMod implements ModInitializer {
 	public void onInitialize() {
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
 			dispatcher.register(
-				CommandManager.literal(COMMAND_NAME)
-					.requires(CommandManager.requirePermissionLevel((PermissionCheck) CommandManager.GAMEMASTERS_CHECK))
+				Commands.literal(COMMAND_NAME)
+					.requires(Commands.hasPermission((PermissionCheck) Commands.LEVEL_GAMEMASTERS))
 					.then(createEntityBranch(registryAccess))
 			)
 		);
@@ -86,7 +86,7 @@ public final class BetterSummonMod implements ModInitializer {
 		ServerTickEvents.END_SERVER_TICK.register(server -> processSpawnTasks());
 		ServerLifecycleEvents.SERVER_STARTING.register(server -> {
 			// Clear any stragglers from a prior integrated-server session to avoid
-			// stale ServerCommandSource references pointing at a defunct world.
+			// stale CommandSourceStack references pointing at a defunct world.
 			if (!ACTIVE_TASKS.isEmpty()) {
 				LOGGER.info("Server starting; discarding {} stale spawn task(s) from prior session", ACTIVE_TASKS.size());
 				ACTIVE_TASKS.clear();
@@ -102,23 +102,23 @@ public final class BetterSummonMod implements ModInitializer {
 		LOGGER.info("Better /summon extensions loaded.");
 	}
 
-	private static RequiredArgumentBuilder<ServerCommandSource, RegistryEntry.Reference<EntityType<?>>> createEntityBranch(
-		CommandRegistryAccess registryAccess
+	private static RequiredArgumentBuilder<CommandSourceStack, Holder.Reference<EntityType<?>>> createEntityBranch(
+		CommandBuildContext registryAccess
 	) {
-		RequiredArgumentBuilder<ServerCommandSource, RegistryEntry.Reference<EntityType<?>>> entityArgument =
-			CommandManager.argument(
+		RequiredArgumentBuilder<CommandSourceStack, Holder.Reference<EntityType<?>>> entityArgument =
+			Commands.argument(
 				ARG_ENTITY,
-				RegistryEntryReferenceArgumentType.registryEntry(registryAccess, RegistryKeys.ENTITY_TYPE)
+				ResourceArgument.resource(registryAccess, Registries.ENTITY_TYPE)
 			);
 
 		attachRepeatNodes(entityArgument, ARG_ENTITY);
 
-		RequiredArgumentBuilder<ServerCommandSource, ?> positionArgument =
-			CommandManager.argument(ARG_POS, Vec3ArgumentType.vec3());
+		RequiredArgumentBuilder<CommandSourceStack, ?> positionArgument =
+			Commands.argument(ARG_POS, Vec3Argument.vec3());
 		attachRepeatNodes(positionArgument, ARG_POS);
 
-		RequiredArgumentBuilder<ServerCommandSource, ?> nbtArgument =
-			CommandManager.argument(ARG_NBT, NbtCompoundArgumentType.nbtCompound());
+		RequiredArgumentBuilder<CommandSourceStack, ?> nbtArgument =
+			Commands.argument(ARG_NBT, CompoundTagArgument.compoundTag());
 		attachRepeatNodes(nbtArgument, ARG_NBT);
 
 		positionArgument.then(nbtArgument);
@@ -127,26 +127,26 @@ public final class BetterSummonMod implements ModInitializer {
 		return entityArgument;
 	}
 
-	private static void attachRepeatNodes(ArgumentBuilder<ServerCommandSource, ?> parentNode, String baseNodeName) {
+	private static void attachRepeatNodes(ArgumentBuilder<CommandSourceStack, ?> parentNode, String baseNodeName) {
 		parentNode.then(
-			CommandManager.argument(ARG_REPEAT_COUNT, IntegerArgumentType.integer(1, MAX_REPEAT_COUNT))
+			Commands.argument(ARG_REPEAT_COUNT, IntegerArgumentType.integer(1, MAX_REPEAT_COUNT))
 				.executes(context -> executeFixedRepeat(context, baseNodeName))
 		);
 
 		parentNode.then(
-			CommandManager.literal(LITERAL_RANDOM)
-				.then(CommandManager.argument(ARG_MIN, IntegerArgumentType.integer(1, MAX_REPEAT_COUNT))
-					.then(CommandManager.argument(ARG_MAX, IntegerArgumentType.integer(1, MAX_REPEAT_COUNT))
+			Commands.literal(LITERAL_RANDOM)
+				.then(Commands.argument(ARG_MIN, IntegerArgumentType.integer(1, MAX_REPEAT_COUNT))
+					.then(Commands.argument(ARG_MAX, IntegerArgumentType.integer(1, MAX_REPEAT_COUNT))
 						.executes(context -> executeRandomRepeat(context, baseNodeName))))
 		);
 	}
 
-	private static int executeFixedRepeat(CommandContext<ServerCommandSource> context, String baseNodeName) throws CommandSyntaxException {
+	private static int executeFixedRepeat(CommandContext<CommandSourceStack> context, String baseNodeName) throws CommandSyntaxException {
 		int repeatCount = IntegerArgumentType.getInteger(context, ARG_REPEAT_COUNT);
 		return executeRepeats(context, baseNodeName, repeatCount, null);
 	}
 
-	private static int executeRandomRepeat(CommandContext<ServerCommandSource> context, String baseNodeName) throws CommandSyntaxException {
+	private static int executeRandomRepeat(CommandContext<CommandSourceStack> context, String baseNodeName) throws CommandSyntaxException {
 		int min = IntegerArgumentType.getInteger(context, ARG_MIN);
 		int max = IntegerArgumentType.getInteger(context, ARG_MAX);
 		if (min > max) {
@@ -159,12 +159,12 @@ public final class BetterSummonMod implements ModInitializer {
 	}
 
 	private static int executeRepeats(
-		CommandContext<ServerCommandSource> context,
+		CommandContext<CommandSourceStack> context,
 		String baseNodeName,
 		int repeatCount,
 		String details
 	) throws CommandSyntaxException {
-		ServerCommandSource source = context.getSource();
+		CommandSourceStack source = context.getSource();
 		SummonRequest request = buildSummonRequest(context, baseNodeName);
 		String baseCommand = extractBaseCommand(context, baseNodeName);
 
@@ -180,15 +180,15 @@ public final class BetterSummonMod implements ModInitializer {
 		int count = repeatCount;
 		int batch = ENTITIES_PER_TICK;
 		String suffix = details == null ? "" : details;
-		source.sendFeedback(
-			() -> Text.literal("Spawning " + count + " entities in batches of " + batch + suffix + "..."),
+		source.sendSuccess(
+			() -> Component.literal("Spawning " + count + " entities in batches of " + batch + suffix + "..."),
 			false
 		);
 		return repeatCount;
 	}
 
 	private static int spawnImmediate(
-		ServerCommandSource source,
+		CommandSourceStack source,
 		SummonRequest request,
 		String baseCommand,
 		int repeatCount,
@@ -197,10 +197,10 @@ public final class BetterSummonMod implements ModInitializer {
 		int successfulExecutions = 0;
 		for (int i = 0; i < repeatCount; i++) {
 			try {
-				NbtCompound nbtForCall = nbtForSummon(request);
-				Entity entity = SummonCommand.summon(source, request.entityType(), request.position(), nbtForCall, request.initialize());
+				CompoundTag nbtForCall = nbtForSummon(request);
+				Entity entity = SummonCommand.createEntity(source, request.entityType(), request.position(), nbtForCall, request.initialize());
 				if (entity == null) {
-					LOGGER.warn("SummonCommand.summon() returned null at iteration {}", i + 1);
+					LOGGER.warn("SummonCommand.createEntity() returned null at iteration {}", i + 1);
 					break;
 				}
 				successfulExecutions++;
@@ -241,7 +241,7 @@ public final class BetterSummonMod implements ModInitializer {
 	}
 
 	private static void sendCompletionFeedback(
-		ServerCommandSource source,
+		CommandSourceStack source,
 		String baseCommand,
 		int successCount,
 		int totalCount,
@@ -250,16 +250,16 @@ public final class BetterSummonMod implements ModInitializer {
 		String suffix = details == null ? "" : details;
 		try {
 			if (successCount < totalCount) {
-				source.sendFeedback(
-					() -> Text.literal(
+				source.sendSuccess(
+					() -> Component.literal(
 						"Executed /" + baseCommand + " " + successCount + "/" + totalCount
 							+ " time(s) before a failure stopped execution" + suffix + "."
 					),
 					false
 				);
 			} else {
-				source.sendFeedback(
-					() -> Text.literal("Executed /" + baseCommand + " " + successCount + " time(s)" + suffix + "."),
+				source.sendSuccess(
+					() -> Component.literal("Executed /" + baseCommand + " " + successCount + " time(s)" + suffix + "."),
 					false
 				);
 			}
@@ -268,33 +268,33 @@ public final class BetterSummonMod implements ModInitializer {
 		}
 	}
 
-	private static SummonRequest buildSummonRequest(CommandContext<ServerCommandSource> context, String baseNodeName)
+	private static SummonRequest buildSummonRequest(CommandContext<CommandSourceStack> context, String baseNodeName)
 		throws CommandSyntaxException {
-		RegistryEntry.Reference<EntityType<?>> entityType =
-			RegistryEntryReferenceArgumentType.getSummonableEntityType(context, ARG_ENTITY);
+		Holder.Reference<EntityType<?>> entityType =
+			ResourceArgument.getSummonableEntityType(context, ARG_ENTITY);
 
 		if (ARG_ENTITY.equals(baseNodeName)) {
-			return new SummonRequest(entityType, context.getSource().getPosition(), new NbtCompound(), true);
+			return new SummonRequest(entityType, context.getSource().getPosition(), new CompoundTag(), true);
 		}
 
 		if (ARG_POS.equals(baseNodeName)) {
-			Vec3d position = Vec3ArgumentType.getVec3(context, ARG_POS);
-			return new SummonRequest(entityType, position, new NbtCompound(), true);
+			Vec3 position = Vec3Argument.getVec3(context, ARG_POS);
+			return new SummonRequest(entityType, position, new CompoundTag(), true);
 		}
 
 		if (ARG_NBT.equals(baseNodeName)) {
-			Vec3d position = Vec3ArgumentType.getVec3(context, ARG_POS);
-			NbtCompound nbt = NbtCompoundArgumentType.getNbtCompound(context, ARG_NBT);
+			Vec3 position = Vec3Argument.getVec3(context, ARG_POS);
+			CompoundTag nbt = CompoundTagArgument.getCompoundTag(context, ARG_NBT);
 			return new SummonRequest(entityType, position, nbt, false);
 		}
 
 		throw BASE_COMMAND_RESOLUTION_ERROR.create();
 	}
 
-	private static String extractBaseCommand(CommandContext<ServerCommandSource> context, String baseNodeName)
+	private static String extractBaseCommand(CommandContext<CommandSourceStack> context, String baseNodeName)
 		throws CommandSyntaxException {
 		int endIndex = -1;
-		for (ParsedCommandNode<ServerCommandSource> parsedNode : context.getNodes()) {
+		for (ParsedCommandNode<CommandSourceStack> parsedNode : context.getNodes()) {
 			if (parsedNode.getNode() != null
 				&& baseNodeName.equals(parsedNode.getNode().getName())
 				&& parsedNode.getRange() != null) {
@@ -311,18 +311,18 @@ public final class BetterSummonMod implements ModInitializer {
 			throw BASE_COMMAND_RESOLUTION_ERROR.create();
 		}
 
-		return CommandManager.stripLeadingSlash(rawBaseCommand);
+		return Commands.trimOptionalPrefix(rawBaseCommand);
 	}
 
 	/**
-	 * Returns an NbtCompound to pass to SummonCommand.summon. If the request NBT is
+	 * Returns a CompoundTag to pass to SummonCommand.createEntity. If the request NBT is
 	 * empty we can safely share a single immutable empty compound instead of deep-copying
 	 * on every iteration, since SummonCommand only writes to it when non-empty input
 	 * is present anyway. This avoids 100 redundant empty-map clones per tick on the
 	 * common case where no [nbt] argument was supplied.
 	 */
-	private static NbtCompound nbtForSummon(SummonRequest request) {
-		NbtCompound source = request.nbt();
+	private static CompoundTag nbtForSummon(SummonRequest request) {
+		CompoundTag source = request.nbt();
 		if (source.isEmpty()) {
 			return EMPTY_NBT;
 		}
@@ -340,14 +340,14 @@ public final class BetterSummonMod implements ModInitializer {
 	}
 
 	private static final class SpawnTask {
-		final ServerCommandSource source;
+		final CommandSourceStack source;
 		final SummonRequest request;
 		final String baseCommand;
 		final int totalCount;
 		final String details;
 		int spawned;
 
-		SpawnTask(ServerCommandSource source, SummonRequest request, String baseCommand, int totalCount, String details) {
+		SpawnTask(CommandSourceStack source, SummonRequest request, String baseCommand, int totalCount, String details) {
 			this.source = source;
 			this.request = request;
 			this.baseCommand = baseCommand;
@@ -358,7 +358,7 @@ public final class BetterSummonMod implements ModInitializer {
 
 		boolean processNextBatch() {
 			// Bail out if the originating server is no longer running to avoid
-			// calling into a stopped/defunct world with a stale ServerCommandSource.
+			// calling into a stopped/defunct world with a stale CommandSourceStack.
 			if (source.getServer() == null || !source.getServer().isRunning()) {
 				LOGGER.warn("Cancelling batched summon at {}/{}: source server is no longer running", spawned, totalCount);
 				return true;
@@ -366,10 +366,10 @@ public final class BetterSummonMod implements ModInitializer {
 			int batchEnd = Math.min(spawned + ENTITIES_PER_TICK, totalCount);
 			for (int i = spawned; i < batchEnd; i++) {
 				try {
-					NbtCompound nbtForCall = nbtForSummon(request);
-					Entity entity = SummonCommand.summon(source, request.entityType(), request.position(), nbtForCall, request.initialize());
+					CompoundTag nbtForCall = nbtForSummon(request);
+					Entity entity = SummonCommand.createEntity(source, request.entityType(), request.position(), nbtForCall, request.initialize());
 					if (entity == null) {
-						LOGGER.warn("SummonCommand.summon() returned null at iteration {}/{}", i + 1, totalCount);
+						LOGGER.warn("SummonCommand.createEntity() returned null at iteration {}/{}", i + 1, totalCount);
 						return true;
 					}
 					spawned++;
@@ -383,9 +383,9 @@ public final class BetterSummonMod implements ModInitializer {
 	}
 
 	private record SummonRequest(
-		RegistryEntry.Reference<EntityType<?>> entityType,
-		Vec3d position,
-		NbtCompound nbt,
+		Holder.Reference<EntityType<?>> entityType,
+		Vec3 position,
+		CompoundTag nbt,
 		boolean initialize
 	) {
 		SummonRequest {

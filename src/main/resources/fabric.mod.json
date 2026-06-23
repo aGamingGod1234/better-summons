@@ -3,7 +3,7 @@
 	"id": "better_summon",
 	"version": "${version}",
 	"name": "Better /summon",
-	"description": "Extends /summon with repeat counts and secure-random repeat ranges.",
+	"description": "Extends /summon with repeat counts and random repeat ranges.",
 	"authors": [
 		"aGamingGod"
 	],
@@ -18,9 +18,9 @@
 		]
 	},
 	"depends": {
-		"fabricloader": ">=0.18.4",
-		"minecraft": "~1.21.11",
-		"java": ">=21",
+		"fabricloader": ">=0.19.3",
+		"minecraft": ">=26 <27",
+		"java": ">=25",
 		"fabric-api": "*"
 	}
 }

@@ -1,6 +1,6 @@
 # Better /summon
 
-`Better /summon` is a small Fabric server-side mod for Minecraft `1.21.11` that lets operators and map makers spawn the same entity multiple times with a single command.
+`Better /summon` is a small Fabric server-side mod for Minecraft `26.x` that lets operators and map makers spawn the same entity multiple times with a single command.
 
 It keeps the normal `/summon` command intact and adds extra forms for:
 
@@ -9,14 +9,14 @@ It keeps the normal `/summon` command intact and adds extra forms for:
 - custom positions
 - custom NBT data
 
-This is useful for testing farms, building encounters, setting up maps, or quickly spawning mobs during admin work. The mod delegates each spawn to Minecraft's own `SummonCommand.summon(...)`, so vanilla validation, NBT handling, permissions, and side effects stay intact.
+This is useful for testing farms, building encounters, setting up maps, or quickly spawning mobs during admin work. The mod delegates each spawn to Minecraft's own `SummonCommand.createEntity(...)`, so vanilla validation, NBT handling, permissions, and side effects stay intact.
 
 ## What You Need
 
-- Minecraft `1.21.11`
+- Minecraft `26.x`
 - [Fabric Loader](https://fabricmc.net/use/)
 - [Fabric API](https://modrinth.com/mod/fabric-api)
-- Java `21` or newer
+- Java `25` or newer
 
 > This mod is meant for worlds or servers where you already have permission to use `/summon`.
 
@@ -72,11 +72,11 @@ The permission level is the same for every variant: op level 2 (`GAMEMASTERS`). 
 
 ## How It Works
 
-- **Delegation, not re-implementation.** Every spawn goes through vanilla `SummonCommand.summon(source, entityType, pos, nbt, initialize)`.
+- **Delegation, not re-implementation.** Every spawn goes through vanilla `SummonCommand.createEntity(source, entityType, pos, nbt, initialize)`.
 - **Batched spawning to protect TPS.** Requests above `ENTITIES_PER_TICK` (100) are split across server ticks through `END_SERVER_TICK`. Operators get an up-front batching message and a final completion report.
 - **Task queue is bounded.** A single command can spawn up to 10,000 entities, and the active queue is capped at 20 tasks. Queue-full attempts return a command error instead of growing memory usage.
-- **Server-lifecycle aware.** Pending batches are dropped when the server stops, and the queue is reset on server start to discard stale `ServerCommandSource` references from prior integrated-server sessions.
-- **Minimal allocation on the hot path.** Empty NBT input reuses a shared empty `NbtCompound`; non-empty NBT is copied before each summon.
+- **Server-lifecycle aware.** Pending batches are dropped when the server stops, and the queue is reset on server start to discard stale `CommandSourceStack` references from prior integrated-server sessions.
+- **Minimal allocation on the hot path.** Empty NBT input reuses a shared empty `CompoundTag`; non-empty NBT is copied before each summon.
 
 ## Build
 
